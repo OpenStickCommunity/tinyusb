@@ -381,9 +381,8 @@ bool hidh_open(uint8_t rhport, uint8_t dev_addr, tusb_desc_interface_t const *de
   hid_itf->report_desc_type = desc_hid->bReportType;
   hid_itf->report_desc_len  = tu_unaligned_read16(&desc_hid->wReportLength);
 
-  // Per HID Specs: default is Report protocol, though we will force Boot protocol when set_config
-  hid_itf->protocol_mode = HID_PROTOCOL_BOOT;
-  if ( HID_SUBCLASS_BOOT == desc_itf->bInterfaceSubClass ) hid_itf->itf_protocol = desc_itf->bInterfaceProtocol;
+  hid_itf->protocol_mode = HID_PROTOCOL_REPORT;
+  hid_itf->itf_protocol = HID_ITF_PROTOCOL_NONE;
 
   return true;
 }
