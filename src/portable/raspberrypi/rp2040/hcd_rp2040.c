@@ -40,6 +40,8 @@
 #include "host/hcd.h"
 #include "host/usbh.h"
 
+#include "interval_override.h"
+
 // port 0 is native USB port, other is counted as software PIO
 #define RHPORT_NATIVE 0
 
@@ -476,12 +478,26 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, tusb_desc_endpoint_t const 
     // Allocated differently based on if it's an interrupt endpoint or not
     struct hw_endpoint *ep = _hw_endpoint_allocate(ep_desc->bmAttributes.xfer);
 
+    uint8_t interval = 0;
+    if (ep_desc->bInterval) {
+        uint8_t local_interval_override = interval_override;
+        if (local_interval_override) {
+            interval = local_interval_override;
+        } else {
+            for (int bit_idx = 0; bit_idx < 6; bit_idx++) {
+                if ((1 << bit_idx) <= ep_desc->bInterval) {
+                    interval = (1 << bit_idx);
+                }
+            }
+        }
+    }
+
     _hw_endpoint_init(ep,
         dev_addr,
         ep_desc->bEndpointAddress,
         tu_edpt_packet_size(ep_desc),
         ep_desc->bmAttributes.xfer,
-        ep_desc->bInterval);
+        interval);
 
     return true;
 }
