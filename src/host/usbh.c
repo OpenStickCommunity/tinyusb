@@ -125,6 +125,7 @@ typedef struct {
 // Invalid driver ID in itf2drv[] ep2drv[][] mapping
 enum { DRVID_INVALID = 0xFFu };
 enum { ADDR_INVALID  = 0xFFu };
+enum { CONTROLLER_INVALID = 0xFFu };
 
 #if CFG_TUSB_DEBUG >= 2
   #define DRIVER_NAME(_name)    .name = _name,
@@ -203,7 +204,7 @@ enum { CONFIG_NUM = 1 }; // default to use configuration 1
 // sum of end device + hub
 #define TOTAL_DEVICES   (CFG_TUH_DEVICE_MAX + CFG_TUH_HUB)
 
-static bool _usbh_initialized = false;
+static uint8_t _usbh_controller = CONTROLLER_INVALID;
 
 // Device with address = 0 for enumeration
 static usbh_dev0_t _dev0;
@@ -274,9 +275,32 @@ static void process_device_unplugged(uint8_t rhport, uint8_t hub_addr, uint8_t h
 static bool usbh_edpt_control_open(uint8_t dev_addr, uint8_t max_packet_size);
 static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes);
 
+#if CFG_TUSB_OS == OPT_OS_NONE
+// TODO rework time-related function later
+void osal_task_delay(uint32_t msec)
+{
+  (void) msec;
+
+  const uint32_t start = hcd_frame_number(_usbh_controller);
+  while ( ( hcd_frame_number(_usbh_controller) - start ) < msec ) {}
+}
+#endif
+
 //--------------------------------------------------------------------+
 // PUBLIC API (Parameter Verification is required)
 //--------------------------------------------------------------------+
+
+bool tuh_configure(uint8_t rhport, uint32_t cfg_id, const void* cfg_param)
+{
+  if (hcd_configure)
+  {
+    return hcd_configure(rhport, cfg_id, cfg_param);
+  }else
+  {
+    return false;
+  }
+}
+
 bool tuh_mounted(uint8_t dev_addr)
 {
   usbh_device_t* dev = get_device(dev_addr);
@@ -303,20 +327,6 @@ tusb_speed_t tuh_speed_get (uint8_t dev_addr)
   return (tusb_speed_t) (dev ? get_device(dev_addr)->speed : _dev0.speed);
 }
 
-#if CFG_TUSB_OS == OPT_OS_NONE
-void osal_task_delay(uint32_t msec)
-{
-  (void) msec;
-
-  const uint32_t start = hcd_frame_number(TUH_OPT_RHPORT);
-  while ( ( hcd_frame_number(TUH_OPT_RHPORT) - start ) < msec ) {}
-}
-#endif
-
-//--------------------------------------------------------------------+
-// CLASS-USBD API (don't require to verify parameters)
-//--------------------------------------------------------------------+
-
 static void clear_device(usbh_device_t* dev)
 {
   tu_memclr(dev, sizeof(usbh_device_t));
@@ -326,15 +336,15 @@ static void clear_device(usbh_device_t* dev)
 
 bool tuh_inited(void)
 {
-  return _usbh_initialized;
+  return _usbh_controller != CONTROLLER_INVALID;
 }
 
-bool tuh_init(uint8_t rhport)
+bool tuh_init(uint8_t controller_id)
 {
   // skip if already initialized
-  if (_usbh_initialized) return _usbh_initialized;
+  if ( tuh_inited() ) return true;
 
-  TU_LOG2("USBH init\r\n");
+  TU_LOG2("USBH init on controller %u\r\n", controller_id);
   TU_LOG2_INT(sizeof(usbh_device_t));
   TU_LOG2_INT(sizeof(hcd_event_t));
   TU_LOG2_INT(sizeof(_ctrl_xfer));
@@ -367,10 +377,11 @@ bool tuh_init(uint8_t rhport)
     usbh_class_drivers[drv_id].init();
   }
 
-  TU_ASSERT(hcd_init(rhport));
-  hcd_int_enable(rhport);
+  _usbh_controller = controller_id;;
 
-  _usbh_initialized = true;
+  TU_ASSERT(hcd_init(controller_id));
+  hcd_int_enable(controller_id);
+
   return true;
 }
 
@@ -712,13 +723,13 @@ uint8_t* usbh_get_enum_buf(void)
 
 void usbh_int_set(bool enabled)
 {
-  // TODO all host controller
+  // TODO all host controller if multiple is used
   if (enabled)
   {
-    hcd_int_enable(TUH_OPT_RHPORT);
+    hcd_int_enable(_usbh_controller);
   }else
   {
-    hcd_int_disable(TUH_OPT_RHPORT);
+    hcd_int_disable(_usbh_controller);
   }
 }
 
@@ -1229,14 +1240,15 @@ static void process_enumeration(tuh_xfer_t* xfer)
 
 #if 0
     case ENUM_RESET_2:
-      // XXX note used by now, but may be needed for some devices !?
+      // TODO not used by now, but may be needed for some devices !?
       // Reset device again before Set Address
       TU_LOG2("Port reset2 \r\n");
       if (_dev0.hub_addr == 0)
       {
         // connected directly to roothub
         hcd_port_reset( _dev0.rhport );
-        osal_task_delay(RESET_DELAY);
+        osal_task_delay(RESET_DELAY); // TODO may not work for no-OS on MCU that require reset_end() since
+                                      // sof of controller may not running while reseting
         hcd_port_reset_end(_dev0.rhport);
         // TODO: fall through to SET ADDRESS, refactor later
       }
@@ -1355,7 +1367,8 @@ static bool enum_new_device(hcd_event_t* event)
     // connected/disconnected directly with roothub
     // wait until device is stable TODO non blocking
     hcd_port_reset(_dev0.rhport);
-    osal_task_delay(RESET_DELAY);
+    osal_task_delay(RESET_DELAY); // TODO may not work for no-OS on MCU that require reset_end() since
+                                  // sof of controller may not running while reseting
     hcd_port_reset_end( _dev0.rhport);
 
     // device unplugged while delaying
