@@ -97,6 +97,8 @@ TU_ATTR_WEAK void tuh_mount_cb (uint8_t daddr);
 /// Invoked when a device is unmounted (detached)
 TU_ATTR_WEAK void tuh_umount_cb(uint8_t daddr);
 
+TU_ATTR_WEAK void tuh_sof_cb();
+
 //--------------------------------------------------------------------+
 // APPLICATION API
 //--------------------------------------------------------------------+

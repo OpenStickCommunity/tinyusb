@@ -184,6 +184,10 @@ static void __tusb_irq_path_func(hw_trans_complete)(void)
   }
 }
 
+static void call_tuh_sof_cb (void* unused) {
+    tuh_sof_cb();
+}
+
 static void __tusb_irq_path_func(hcd_rp2040_irq)(void)
 {
   uint32_t status = usb_hw->ints;
@@ -246,6 +250,20 @@ static void __tusb_irq_path_func(hcd_rp2040_irq)(void)
            tu_u32_low16(*epx.buffer_control),
            tu_u32_high16(*epx.buffer_control));
     panic("Data Seq Error \n");
+  }
+
+  if ( status & USB_INTE_HOST_SOF_BITS )
+  {
+    handled |= USB_INTE_HOST_SOF_BITS;
+    usb_hw->sof_rd; // HOST_SOF interrupt is cleared by reading SOF_RD
+    if (tuh_sof_cb) {
+      hcd_event_t event;
+      event.rhport              = RHPORT_NATIVE;
+      event.event_id            = USBH_EVENT_FUNC_CALL;
+      event.func_call.func      = call_tuh_sof_cb;
+      event.func_call.param     = NULL;
+      hcd_event_handler(&event, true);
+    }
   }
 
   if ( status ^ handled )
@@ -407,6 +425,7 @@ bool hcd_init(uint8_t rhport)
                  USB_INTE_HOST_RESUME_BITS      |
                  USB_INTE_STALL_BITS            |
                  USB_INTE_TRANS_COMPLETE_BITS   |
+                 USB_INTE_HOST_SOF_BITS         |
                  USB_INTE_ERROR_RX_TIMEOUT_BITS |
                  USB_INTE_ERROR_DATA_SEQ_BITS   ;
 
