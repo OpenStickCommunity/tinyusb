@@ -578,9 +578,11 @@ bool hcd_edpt_xfer(uint8_t rhport, uint8_t dev_addr, uint8_t ep_addr, uint8_t * 
   if ( ep_addr != ep->ep_addr )
   {
     assert(ep_num == 0);
+  }
 
-    // Direction has flipped on endpoint control so re init it but with same properties
-    _hw_endpoint_init(ep, dev_addr, ep_addr, ep->wMaxPacketSize, ep->transfer_type, 0);
+  if (ep_num == 0) {
+    // Always reinitialize epx
+    _hw_endpoint_init(ep, dev_addr, ep_addr, tuh_get_ep0_size(dev_addr), ep->transfer_type, 0);
   }
 
   // If a normal transfer (non-interrupt) then initiate using
@@ -637,7 +639,7 @@ bool hcd_setup_send(uint8_t rhport, uint8_t dev_addr, uint8_t const setup_packet
   assert(!ep->active);
 
   // EP0 out
-  _hw_endpoint_init(ep, dev_addr, 0x00, ep->wMaxPacketSize, 0, 0);
+  _hw_endpoint_init(ep, dev_addr, 0x00, tuh_get_ep0_size(dev_addr), 0, 0);
   assert(ep->configured);
 
   ep->remaining_len = 8;

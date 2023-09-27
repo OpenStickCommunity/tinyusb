@@ -165,6 +165,8 @@ bool tuh_ready(uint8_t daddr) {
   return tuh_mounted(daddr) && !tuh_suspended(daddr);
 }
 
+uint16_t tuh_get_ep0_size(uint8_t daddr);
+
 //--------------------------------------------------------------------+
 // Transfer API
 //--------------------------------------------------------------------+

@@ -313,6 +313,11 @@ bool tuh_rhport_reset_bus(uint8_t rhport, bool active) {
   return true;
 }
 
+uint16_t tuh_get_ep0_size(uint8_t dev_addr) {
+  usbh_device_t *dev = get_device(dev_addr);
+  return (dev ? dev->ep0_size : 8); // unknown device probably means we're enumerating
+}
+
 //--------------------------------------------------------------------+
 // PUBLIC API (Parameter Verification is required)
 //--------------------------------------------------------------------+
