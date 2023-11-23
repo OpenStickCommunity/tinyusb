@@ -167,6 +167,8 @@ bool tuh_ready(uint8_t daddr) {
 
 uint16_t tuh_get_ep0_size(uint8_t daddr);
 
+bool tuh_get_hub_addr_port(uint8_t daddr, uint8_t* hub_addr, uint8_t* hub_port);
+
 //--------------------------------------------------------------------+
 // Transfer API
 //--------------------------------------------------------------------+

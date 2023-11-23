@@ -318,6 +318,16 @@ uint16_t tuh_get_ep0_size(uint8_t dev_addr) {
   return (dev ? dev->ep0_size : 8); // unknown device probably means we're enumerating
 }
 
+bool tuh_get_hub_addr_port(uint8_t dev_addr, uint8_t* hub_addr, uint8_t* hub_port) {
+  usbh_device_t const *dev = get_device(dev_addr);
+  TU_VERIFY(dev);
+
+  *hub_addr = dev->hub_addr;
+  *hub_port = dev->hub_port;
+
+  return true;
+}
+
 //--------------------------------------------------------------------+
 // PUBLIC API (Parameter Verification is required)
 //--------------------------------------------------------------------+
