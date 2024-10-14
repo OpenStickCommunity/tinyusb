@@ -27,17 +27,23 @@
 
 import argparse
 import os
+import re
 import sys
 import time
 import serial
 import subprocess
 import json
 import glob
-import platform
 from multiprocessing import Pool
+import fs
 
-ENUM_TIMEOUT = 20
+ENUM_TIMEOUT = 30
 
+STATUS_OK = "\033[32mOK\033[0m"
+STATUS_FAILED = "\033[31mFailed\033[0m"
+STATUS_SKIPPED = "\033[33mSkipped\033[0m"
+
+verbose = False
 
 # get usb serial by id
 def get_serial_dev(id, vendor_str, product_str, ifnum):
@@ -53,9 +59,8 @@ def get_serial_dev(id, vendor_str, product_str, ifnum):
         return port_list[0]
 
 
-# Currently not used, left as reference
+# get usb disk by id
 def get_disk_dev(id, vendor_str, lun):
-    # get usb disk by id
     return f'/dev/disk/by-id/usb-{vendor_str}_Mass_Storage_{id}-0:{lun}'
 
 
@@ -72,34 +77,35 @@ def open_serial_dev(port):
                 # slight delay since kernel may occupy the port briefly
                 time.sleep(0.5)
                 timeout = timeout - 0.5
-                ser = serial.Serial(port, timeout=1)
+                ser = serial.Serial(port, timeout=5)
                 break
             except serial.SerialException:
                 pass
         time.sleep(0.5)
         timeout = timeout - 0.5
-    assert timeout, 'Device not available or Cannot open port'
+
+    assert timeout, f'Cannot open port f{port}' if os.path.exists(port) else f'Port {port} not existed'
     return ser
 
 
-def read_disk_file(id, fname):
-    # on different self-hosted, the mount point is different
-    file_list = [
-        f'/media/blkUSB_{id[-8:]}.02/{fname}',
-        f'/media/{os.getenv("USER")}/TinyUSB MSC/{fname}'
-    ]
+def read_disk_file(uid, lun, fname):
+    # open_fs("fat://{dev}) require 'pip install pyfatfs'
+    dev = get_disk_dev(uid, 'TinyUSB', lun)
     timeout = ENUM_TIMEOUT
     while timeout:
-        for file in file_list:
-            if os.path.isfile(file):
-                with open(file, 'rb') as f:
+        if os.path.exists(dev):
+            fat = fs.open_fs(f'fat://{dev}?read_only=true')
+            try:
+                with fat.open(fname, 'rb') as f:
                     data = f.read()
-                    return data
-
+            finally:
+                fat.close()
+            assert data, f'Cannot read file {fname} from {dev}'
+            return data
         time.sleep(1)
-        timeout = timeout - 1
+        timeout -= 1
 
-    assert timeout, 'Device not available'
+    assert timeout, f'Storage {dev} not existed'
     return None
 
 
@@ -107,7 +113,6 @@ def read_disk_file(id, fname):
 # Flashing firmware
 # -------------------------------------------------------------
 def run_cmd(cmd):
-    #print(cmd)
     r = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if r.returncode != 0:
         title = f'COMMAND FAILED: {cmd}'
@@ -119,6 +124,9 @@ def run_cmd(cmd):
         else:
             print(title)
             print(r.stdout.decode("utf-8"))
+    elif verbose:
+        print(cmd)
+        print(r.stdout.decode("utf-8"))
     return r
 
 
@@ -173,9 +181,19 @@ echo "Ready for Remote Connections"
         with open(f_wch, 'w') as file:
             file.write(cfg_content)
 
-    ret = run_cmd(f'openocd_wch -c "adapter serial {board["flasher_sn"]}" -f {f_wch} -c "program {firmware}.elf reset exit"')
+    ret = run_cmd(f'openocd_wch -c "adapter serial {board["flasher_sn"]}" -f {f_wch} '
+                  f'-c "program {firmware}.elf reset exit"')
     return ret
 
+
+def flash_openocd_adi(board, firmware):
+    openocd_adi_script_path = f'{os.getenv("HOME")}/app/openocd_adi/tcl'
+    if not os.path.exists(openocd_adi_script_path):
+        openocd_adi_script_path = '/home/pi/openocd_adi/tcl'
+
+    ret = run_cmd(f'openocd_adi -c "adapter serial {board["flasher_sn"]}" -s {openocd_adi_script_path} '
+                  f'{board["flasher_args"]} -c "program {firmware}.elf reset exit"')
+    return ret
 
 def flash_wlink_rs(board, firmware):
     # wlink use index for probe selection and lacking usb serial support
@@ -196,15 +214,45 @@ def flash_esptool(board, firmware):
     return ret
 
 
+def flash_uniflash(board, firmware):
+    ret = run_cmd(f'dslite.sh {board["flasher_args"]} -f {firmware}.hex')
+    return ret
+
+
 # -------------------------------------------------------------
-# Tests
+# Tests: dual
 # -------------------------------------------------------------
-def test_board_test(board):
+
+def test_dual_host_info_to_device_cdc(board):
+    uid = board['uid']
+    declared_devs = [f'{d["vid_pid"]}_{d["serial"]}' for d in board['tests']['dual_attached']]
+
+    port = get_serial_dev(uid, 'TinyUSB', "TinyUSB_Device", 0)
+    ser = open_serial_dev(port)
+    # read from cdc, first line should contain vid/pid and serial
+    data = ser.read(1000)
+    lines = data.decode('utf-8').splitlines()
+    enum_dev_sn = []
+    for l in lines:
+        vid_pid_sn = re.search(r'ID ([0-9a-fA-F]+):([0-9a-fA-F]+) SN (\w+)', l)
+        if vid_pid_sn:
+            print(f'\r\n  {l} ', end='')
+            enum_dev_sn.append(f'{vid_pid_sn.group(1)}_{vid_pid_sn.group(2)}_{vid_pid_sn.group(3)}')
+
+    assert(set(declared_devs) == set(enum_dev_sn)), \
+        f'Enumerated devices {enum_dev_sn} not match with declared {declared_devs}'
+    return 0
+
+
+# -------------------------------------------------------------
+# Tests: device
+# -------------------------------------------------------------
+def test_device_board_test(board):
     # Dummy test
     pass
 
 
-def test_cdc_dual_ports(board):
+def test_device_cdc_dual_ports(board):
     uid = board['uid']
     port1 = get_serial_dev(uid, 'TinyUSB', "TinyUSB_Device", 0)
     port2 = get_serial_dev(uid, 'TinyUSB', "TinyUSB_Device", 2)
@@ -216,17 +264,17 @@ def test_cdc_dual_ports(board):
     str1 = b"test_no1"
     ser1.write(str1)
     ser1.flush()
-    assert ser1.read(100) == str1.lower(), 'Port1 wrong data'
-    assert ser2.read(100) == str1.upper(), 'Port2 wrong data'
+    assert ser1.read(len(str1)) == str1.lower(), 'Port1 wrong data'
+    assert ser2.read(len(str1)) == str1.upper(), 'Port2 wrong data'
 
     str2 = b"test_no2"
     ser2.write(str2)
     ser2.flush()
-    assert ser1.read(100) == str2.lower(), 'Port1 wrong data'
-    assert ser2.read(100) == str2.upper(), 'Port2 wrong data'
+    assert ser1.read(len(str2)) == str2.lower(), 'Port1 wrong data'
+    assert ser2.read(len(str2)) == str2.upper(), 'Port2 wrong data'
 
 
-def test_cdc_msc(board):
+def test_device_cdc_msc(board):
     uid = board['uid']
     # Echo test
     port = get_serial_dev(uid, 'TinyUSB', "TinyUSB_Device", 0)
@@ -235,10 +283,10 @@ def test_cdc_msc(board):
     str = b"test_str"
     ser.write(str)
     ser.flush()
-    assert ser.read(100) == str, 'CDC wrong data'
+    assert ser.read(len(str)) == str, 'CDC wrong data'
 
     # Block test
-    data = read_disk_file(uid, 'README.TXT')
+    data = read_disk_file(uid,0,'README.TXT')
     readme = \
     b"This is tinyusb's MassStorage Class demo.\r\n\r\n\
 If you find any bugs or get any questions, feel free to file an\r\n\
@@ -247,11 +295,11 @@ issue at github.com/hathach/tinyusb"
     assert data == readme, 'MSC wrong data'
 
 
-def test_cdc_msc_freertos(board):
-    test_cdc_msc(board)
+def test_device_cdc_msc_freertos(board):
+    test_device_cdc_msc(board)
 
 
-def test_dfu(board):
+def test_device_dfu(board):
     uid = board['uid']
 
     # Wait device enum
@@ -293,7 +341,7 @@ def test_dfu(board):
     os.remove(f_dfu1)
 
 
-def test_dfu_runtime(board):
+def test_device_dfu_runtime(board):
     uid = board['uid']
 
     # Wait device enum
@@ -310,7 +358,7 @@ def test_dfu_runtime(board):
     assert timeout, 'Device not available'
 
 
-def test_hid_boot_interface(board):
+def test_device_hid_boot_interface(board):
     uid = board['uid']
     kbd = get_hid_dev(uid, 'TinyUSB', 'TinyUSB_Device', 'event-kbd')
     mouse1 = get_hid_dev(uid, 'TinyUSB', 'TinyUSB_Device', 'if01-event-mouse')
@@ -323,10 +371,10 @@ def test_hid_boot_interface(board):
         time.sleep(1)
         timeout = timeout - 1
 
-    assert timeout, 'Device not available'
+    assert timeout, 'HID device not available'
 
 
-def test_hid_composite_freertos(id):
+def test_device_hid_composite_freertos(id):
     # TODO implement later
     pass
 
@@ -336,13 +384,15 @@ def test_hid_composite_freertos(id):
 # -------------------------------------------------------------
 # all possible tests: board_test is added last to disable board's usb
 all_tests = [
-    'cdc_dual_ports',
-    'cdc_msc',
-    'cdc_msc_freertos',
-    'dfu',
-    'dfu_runtime',
-    'hid_boot_interface',
-    'board_test'
+    'device/cdc_dual_ports',
+    'device/cdc_msc',
+    'device/dfu',
+    'device/cdc_msc_freertos',  # don't test 2 cdc_msc next to each other
+    'device/dfu_runtime',
+    'device/hid_boot_interface',
+
+    'dual/host_info_to_device_cdc',
+    'device/board_test'
 ]
 
 
@@ -351,24 +401,24 @@ def test_board(board):
     flasher = board['flasher'].lower()
 
     # default to all tests
-    if 'tests' in board:
-        test_list = board['tests'] + ['board_test']
-    else:
-        test_list = list(all_tests)
+    test_list = list(all_tests)
 
-    # remove skip_tests
-    if 'tests_skip' in board:
-        for skip in board['tests_skip']:
-            if skip in test_list:
-                test_list.remove(skip)
+    if 'tests' in board:
+        board_tests = board['tests']
+        if 'only' in board_tests:
+            test_list = board_tests['only'] + ['device/board_test']
+        if 'skip' in board_tests:
+            for skip in board_tests['skip']:
+                if skip in test_list:
+                    test_list.remove(skip)
 
     err_count = 0
     for test in test_list:
-        fw_dir = f'cmake-build/cmake-build-{name}/device/{test}'
+        fw_dir = f'cmake-build/cmake-build-{name}/{test}'
         if not os.path.exists(fw_dir):
-            fw_dir = f'examples/cmake-build-{name}/device/{test}'
-        fw_name = f'{fw_dir}/{test}'
-        print(f'{name:30} {test:20} ... ', end='')
+            fw_dir = f'examples/cmake-build-{name}/{test}'
+        fw_name = f'{fw_dir}/{os.path.basename(test)}'
+        print(f'{name:25} {test:30} ... ', end='')
 
         if not os.path.exists(fw_dir):
             print('Skip')
@@ -385,29 +435,33 @@ def test_board(board):
 
         if ret.returncode == 0:
             try:
-                ret = globals()[f'test_{test}'](board)
+                ret = globals()[f'test_{test.replace("/", "_")}'](board)
                 print('OK')
-            except AssertionError as e:
+            except Exception as e:
                 err_count += 1
-                print('Failed')
+                print(STATUS_FAILED)
                 print(f'  {e}')
         else:
             err_count += 1
-            print('Flash failed')
-
+            print(f'Flash {STATUS_FAILED}')
     return err_count
+
 
 def main():
     """
     Hardware test on specified boards
     """
+    global verbose
+
     parser = argparse.ArgumentParser()
     parser.add_argument('config_file', help='Configuration JSON file')
     parser.add_argument('-b', '--board', action='append', default=[], help='Boards to test, all if not specified')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     args = parser.parse_args()
 
     config_file = args.config_file
     boards = args.board
+    verbose = args.verbose
 
     # if config file is not found, try to find it in the same directory as this script
     if not os.path.exists(config_file):
@@ -420,11 +474,14 @@ def main():
     else:
         config_boards = [e for e in config['boards'] if e['name'] in boards]
 
-    err_count_list = 0
     with Pool(processes=os.cpu_count()) as pool:
-        err_count_list = pool.map(test_board, config_boards)
+        err_count = sum(pool.map(test_board, config_boards))
 
-    sys.exit(sum(err_count_list))
+    print()
+    print("-" * 30)
+    print(f'Total failed: {err_count}')
+    print("-" * 30)
+    sys.exit(err_count)
 
 
 if __name__ == '__main__':
