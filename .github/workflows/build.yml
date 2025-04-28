@@ -65,7 +65,7 @@ jobs:
     with:
       build-system: 'cmake'
       toolchain: ${{ matrix.toolchain }}
-      build-args: ${{ toJSON(fromJSON(needs.set-matrix.outputs.json)[matrix.toolchain].family) }}
+      build-args: ${{ toJSON(fromJSON(needs.set-matrix.outputs.json)[matrix.toolchain]) }}
       one-per-family: ${{ github.event_name == 'push' }}
 
   # ---------------------------------------
@@ -85,11 +85,11 @@ jobs:
           - 'msp430-gcc'
           - 'riscv-gcc'
           - 'rx-gcc'
-          - 'esp-idf' # buid-system is ignored
+          - 'esp-idf'
     with:
       build-system: 'make'
       toolchain: ${{ matrix.toolchain }}
-      build-args: ${{ toJSON(fromJSON(needs.set-matrix.outputs.json)[matrix.toolchain].family) }}
+      build-args: ${{ toJSON(fromJSON(needs.set-matrix.outputs.json)[matrix.toolchain]) }}
       one-per-family: true
 
   # ---------------------------------------
@@ -110,31 +110,44 @@ jobs:
       one-per-family: true
 
   # ---------------------------------------
-  # Build IAR on HFP self-hosted
+  # Build IAR
+  # Since IAR Token secret is not passed to forked PR, only build non-forked PR with make.
+  # cmake is built by circle-ci. Due to IAR limit capacity, only build oe per family
   # ---------------------------------------
   arm-iar:
-    if: github.repository_owner == 'hathach'
+    if: false # disable for now since we got reach capacity limit too often
+    #if: github.event_name == 'push' && github.repository_owner == 'hathach'
     needs: set-matrix
-    runs-on: [self-hosted, Linux, X64, hifiphile]
-    env:
-      BUILD_ARGS: ${{ join(fromJSON(needs.set-matrix.outputs.json)['arm-iar'].family, ' ') }}
-    steps:
-      - name: Clean workspace
-        run: |
-          echo "Cleaning up previous run"
-          rm -rf "${{ github.workspace }}"
-          mkdir -p "${{ github.workspace }}"
+    uses: ./.github/workflows/build_util.yml
+    secrets: inherit
+    strategy:
+      fail-fast: false
+      matrix:
+        build-system:
+          - 'make'
+    with:
+      build-system: ${{ matrix.build-system }}
+      toolchain: 'arm-iar'
+      build-args: ${{ toJSON(fromJSON(needs.set-matrix.outputs.json)['arm-iar']) }}
+      one-per-family: true
 
+  # ---------------------------------------
+  # Zephyr
+  # ---------------------------------------
+  zephyr:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
       - name: Checkout TinyUSB
         uses: actions/checkout@v4
 
-      - name: Get Dependencies
-        run: python3 tools/get_deps.py $BUILD_ARGS
+      - name: Setup Zephyr project
+        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        with:
+          app-path: examples
+          toolchains: arm-zephyr-eabi
 
       - name: Build
-        run: python3 tools/build.py --one-per-family --toolchain iar $BUILD_ARGS
-
-      - name: Test on actual hardware (hardware in the loop)
-        if: github.event_name == 'pull_request'
         run: |
-          python3 test/hil/hil_test.py hfp.json
+          west build -b pca10056 -d examples/device/cdc_msc/build examples/device/cdc_msc -- -DRTOS=zephyr
+          west build -b pca10056 -d examples/device/msc_dual_lun/build examples/device/msc_dual_lun -- -DRTOS=zephyr
