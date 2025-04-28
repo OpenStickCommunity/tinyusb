@@ -366,8 +366,8 @@ bool tuh_get_hub_addr_port(uint8_t dev_addr, uint8_t* hub_addr, uint8_t* hub_por
   usbh_device_t const *dev = get_device(dev_addr);
   TU_VERIFY(dev);
 
-  *hub_addr = dev->hub_addr;
-  *hub_port = dev->hub_port;
+  *hub_addr = dev->bus_info.hub_addr;
+  *hub_port = dev->bus_info.hub_port;
 
   return true;
 }
