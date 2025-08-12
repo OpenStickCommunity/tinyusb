@@ -512,7 +512,7 @@ bool hidh_open(uint8_t rhport, uint8_t daddr, tusb_desc_interface_t const* desc_
   p_hid->report_desc_len = tu_unaligned_read16(&desc_hid->wReportLength);
 
   p_hid->protocol_mode = HID_PROTOCOL_REPORT;
-  p_hid->itf_protocol = HID_ITF_PROTOCOL_NONE;
+  p_hid->itf_protocol = desc_itf->bInterfaceProtocol;
 
   return true;
 }
